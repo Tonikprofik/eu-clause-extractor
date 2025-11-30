@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Vector stores (large)
+chroma_db*/
+
+# Evaluation results (generated)
+*_evaluation_results/
+silver_annotations*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Secrets
+*.pem
+*.key

@@ -1,0 +1,78 @@
+model_list:
+  # --- FOR LOCAL DEVELOPMENT (using Ollama via Docker Desktop) ---
+  - model_name: gemma3-4b-it-qat-local-ollama
+    litellm_params:
+      model: ollama/gemma3:4b-it-qat # Your existing local Ollama model
+      api_base: http://host.docker.internal:11434 # For LiteLLM in Docker talking to host Ollama
+
+  # # --- FOR UCLOUD DEPLOYMENT (Gemma served by vLLM within Coder job) ---
+  - model_name: gemma3-ucloud-27b-it-qat-llama
+    litellm_params:
+      model: ollama/gemma-3-27b-it-qat
+      api_base: http://app-llmopstony.cloud.aau.dk:11434
+  # - model_name: gemma3-ucloud-4b-it-qat
+  #   litellm_params:
+  #     # This 'model' name MUST match what vLLM reports it's serving.
+  #     # Often, it's the Hugging Face path you gave to `vllm serve`.
+  #     # Example: if vLLM serves "google/gemma-2b-it", use that here.
+  #     model: hosted_vllm/google/gemma-3-4b-it-qat-q4_0-gguf # Placeholder - ADJUST TO ACTUAL MODEL SERVED BY VLLM
+  #     api_base: http://localhost:8001/v1 # vLLM server running in the same Coder job
+  #     # api_key: "EMPTY" # Usually not needed for local vLLM OpenAI endpoint
+  # - model_name: gemma3-ucloud-27b-it-qat-llama
+  #   litellm_params:
+  #     model: hosted_vllm/google/gemma-3-27b-it
+  #     api_base: http://localhost:8001/v1 https://app-llmopstony.cloud.aau.dk/
+  #     # api_key: "EMPTY" # Usually not needed for local vLLM OpenAI endpoint
+
+  - model_name: gemma3-4b-it-qat # Alias used in API calls
+    litellm_params:
+      model: ollama/gemma3:4b-it-qat # Actual model Ollama serves
+      api_base: http://host.docker.internal:11434 # Use this hostname to reach host from container (Docker Desktop)
+      # If not using Docker Desktop, might need http://<your-local-ip>:11434
+      # Or if Ollama runs in Docker too, use container networking. Start simple.
+
+  # --- EXTERNAL APIS (Accessed via LiteLLM Proxy) ---
+  # Claude 3.7 Sonnet
+  - model_name: claude-3-7
+    litellm_params:
+      model: anthropic/claude-3-7-sonnet-20250219
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+
+  - model_name: claude-3-5
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+
+  # GPT-4o
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-4.1
+    litellm_params:
+      model: openai/gpt-4.1
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # o4 - reasoning model, default medium reasoning
+  - model_name: o4-mini
+    litellm_params:
+      model: openai/o4-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Gemini 2.5 Flash - reasoning model
+  - model_name: gemini-2-5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash-preview-04-17
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-embedding
+    litellm_params:
+      model: gemini/gemini-embedding-exp-03-07
+      api_key: os.environ/GEMINI_API_KEY
+litellm_settings:
+  drop_params: true
+# Removed for now, add back when needed (e.g., for callbacks)
+#  pass
