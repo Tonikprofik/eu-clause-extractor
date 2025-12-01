@@ -24,8 +24,7 @@ try:
         run_rag_clause_extraction,
         CLAUSE_TYPES as BASE_CLAUSE_TYPES,
     )
-except Exception as e:
-    # Fallback to allow app import; actual endpoint will raise on call
+except Exception:
     run_rag_clause_extraction = None  # type: ignore
     BASE_CLAUSE_TYPES = [
         "Subject Matter & Scope",
@@ -41,8 +40,33 @@ except Exception:
     run_advanced_rag_pipeline = None  # type: ignore
 
 # Configuration
-API_TITLE = "EUContracts API"
-API_VERSION = "v1"
+API_TITLE = "EU Clause Extractor API"
+API_VERSION = "1.0.0"
+API_DESCRIPTION = """
+Extract legal clauses from EU regulations using RAG-powered LLM pipelines.
+
+## Features
+
+- **Semantic Retrieval**: ChromaDB vector search for relevant document chunks
+- **Model Flexibility**: LiteLLM proxy for unified access to Claude, GPT-4, Gemma, etc.
+- **Observability**: Langfuse integration for tracing and evaluation
+- **HyDE Mode**: Optional Hypothetical Document Embedding for improved retrieval
+
+## Clause Types
+
+The extractor identifies these clause categories:
+- Subject Matter & Scope
+- Definitions  
+- Obligations of Member States
+- Penalties
+- Entry into Force & Application
+
+## Links
+
+- [GitHub Repository](https://github.com/Tonikprofik/eu-clause-extractor)
+- [Langfuse](https://langfuse.com) for observability
+"""
+
 LITELLM_PROXY_URL = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
 DEFAULT_READER_MODEL = os.getenv("RAG_READER_MODEL_ALIAS", "claude-3-7")
 DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL_ALIAS", "text-embedding-3-small")
@@ -56,7 +80,7 @@ LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
 LANGFUSE_ENABLED = bool(LANGFUSE_HOST and LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY)
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://app.eucontracts.ai").split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://app.eucontracts.ai,http://localhost:3000").split(",")
 
 # Prometheus metrics
 REQ_HISTOGRAM = Histogram(
@@ -68,7 +92,7 @@ REQ_HISTOGRAM = Histogram(
 RAG_STAGE_HISTOGRAM = Histogram(
     "rag_stage_duration_seconds",
     "RAG stage duration in seconds",
-    ["stage"],  # chunk, embed, retrieve, read
+    ["stage"],
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, float("inf")),
 )
 RAG_ERRORS = Counter(
@@ -82,8 +106,29 @@ LLM_TOKENS = Counter(
     ["model", "role"],
 )
 
-# FastAPI app
-app = FastAPI(title=API_TITLE, version=API_VERSION)
+# OpenAPI Tags
+tags_metadata = [
+    {"name": "extraction", "description": "Core clause extraction endpoints"},
+    {"name": "meta", "description": "Health checks and model discovery"},
+    {"name": "observability", "description": "Prometheus metrics for monitoring"},
+]
+
+# FastAPI app with enhanced metadata
+app = FastAPI(
+    title=API_TITLE,
+    version=API_VERSION,
+    description=API_DESCRIPTION,
+    openapi_tags=tags_metadata,
+    contact={
+        "name": "Tony Thai Do",
+        "url": "https://github.com/Tonikprofik/eu-clause-extractor",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in ALLOWED_ORIGINS if o.strip()],
@@ -96,7 +141,6 @@ app.add_middleware(
 @app.middleware("http")
 async def prometheus_http_middleware(request: Request, call_next):
     start = time.perf_counter()
-    # Resolve route template if available after response
     response = None
     try:
         response = await call_next(request)
@@ -110,61 +154,210 @@ async def prometheus_http_middleware(request: Request, call_next):
         REQ_HISTOGRAM.labels(route_path, method, status).observe(duration)
 
 
-# Models
+# ============================================================================
+# Pydantic Models with Examples
+# ============================================================================
+
 class ExtractionOptions(BaseModel):
+    """Configuration options for the extraction pipeline."""
+    
     use_hyde: bool = Field(
-        default=DEFAULT_USE_HYDE, description="Enable HyDE (quality mode)"
+        default=False,
+        description="Enable HyDE (Hypothetical Document Embedding) for improved retrieval quality",
+        json_schema_extra={"example": False},
     )
-    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=50)
-    reader_model: Optional[str] = Field(default=DEFAULT_READER_MODEL)
-    embedding_model: Optional[str] = Field(default=DEFAULT_EMBEDDING_MODEL)
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Number of chunks to retrieve",
+        json_schema_extra={"example": 5},
+    )
+    reader_model: Optional[str] = Field(
+        default=None,
+        description="LLM model alias for clause extraction (e.g., claude-3-7, gpt-4)",
+        json_schema_extra={"example": "claude-3-7"},
+    )
+    embedding_model: Optional[str] = Field(
+        default=None,
+        description="Embedding model alias for semantic search",
+        json_schema_extra={"example": "text-embedding-3-small"},
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "use_hyde": False,
+                "top_k": 5,
+                "reader_model": "claude-3-7",
+                "embedding_model": "text-embedding-3-small",
+            }
+        }
+    }
 
 
 class ExtractionRequest(BaseModel):
-    document_id: str
-    document_text: str
-    user_query: str
-    clause_types: Optional[List[str]] = None
-    language: str = "en"
-    options: ExtractionOptions = Field(default_factory=ExtractionOptions)
+    """Request body for clause extraction."""
+    
+    document_id: str = Field(
+        description="Unique identifier for the document (e.g., CELEX number)",
+        json_schema_extra={"example": "32016R0679"},
+    )
+    document_text: str = Field(
+        description="Full text of the EU regulation to analyze",
+        json_schema_extra={"example": "Article 1\nSubject matter and scope\nThis Regulation lays down rules relating to the protection of natural persons..."},
+    )
+    user_query: str = Field(
+        description="Natural language query describing what to extract",
+        json_schema_extra={"example": "Extract definitions, obligations, and penalties from this regulation"},
+    )
+    clause_types: Optional[List[str]] = Field(
+        default=None,
+        description="Specific clause types to extract (defaults to all types)",
+        json_schema_extra={"example": ["Definitions", "Penalties"]},
+    )
+    language: str = Field(
+        default="en",
+        description="Document language (en, de)",
+        json_schema_extra={"example": "en"},
+    )
+    options: ExtractionOptions = Field(
+        default_factory=ExtractionOptions,
+        description="Pipeline configuration options",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "document_id": "32016R0679",
+                "document_text": "Article 1\nSubject matter and scope\nThis Regulation lays down rules relating to the protection of natural persons with regard to the processing of personal data.\n\nArticle 4\nDefinitions\n(1) 'personal data' means any information relating to an identified or identifiable natural person ('data subject');\n(2) 'processing' means any operation performed on personal data.\n\nArticle 83\nPenalties\nMember States shall lay down the rules on penalties applicable to infringements of this Regulation.",
+                "user_query": "Extract definitions and penalties from this GDPR excerpt",
+                "clause_types": ["Definitions", "Penalties"],
+                "language": "en",
+                "options": {"use_hyde": False, "top_k": 5, "reader_model": "claude-3-7"},
+            }
+        }
+    }
 
 
 class PredictedAnnotation(BaseModel):
-    clause_type: str
-    clause_text: str
+    """A single extracted clause."""
+    
+    clause_type: str = Field(
+        description="Category of the extracted clause",
+        json_schema_extra={"example": "Definitions"},
+    )
+    clause_text: str = Field(
+        description="The extracted clause text",
+        json_schema_extra={"example": "'personal data' means any information relating to an identified or identifiable natural person"},
+    )
 
 
 class ExtractionResponse(BaseModel):
-    predicted_annotations: List[PredictedAnnotation]
-    retrieved_chunks: List[str]
-    reader_llm_output_raw: Optional[str] = None
-    trace_id: Optional[str] = None
-    timings: Dict[str, Optional[float]] = {}
-    usage: Dict[str, Optional[int]] = {}
-    model_info: Dict[str, Any] = {}
-    error: Optional[Dict[str, Any]] = None
+    """Response from clause extraction."""
+    
+    predicted_annotations: List[PredictedAnnotation] = Field(
+        description="List of extracted clauses with their types",
+    )
+    retrieved_chunks: List[str] = Field(
+        description="Document chunks used for context during extraction",
+    )
+    reader_llm_output_raw: Optional[str] = Field(
+        default=None,
+        description="Raw LLM output before parsing (for debugging)",
+    )
+    trace_id: Optional[str] = Field(
+        default=None,
+        description="Langfuse trace ID for observability",
+        json_schema_extra={"example": "abc123-def456"},
+    )
+    timings: Dict[str, Optional[float]] = Field(
+        default_factory=dict,
+        description="Timing breakdown by pipeline stage (ms)",
+    )
+    usage: Dict[str, Optional[int]] = Field(
+        default_factory=dict,
+        description="Token usage statistics",
+    )
+    model_info: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Models used for this extraction",
+    )
+    error: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Error details if extraction failed",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "predicted_annotations": [
+                    {"clause_type": "Definitions", "clause_text": "'personal data' means any information relating to an identified or identifiable natural person"},
+                    {"clause_type": "Penalties", "clause_text": "Member States shall lay down the rules on penalties applicable to infringements"},
+                ],
+                "retrieved_chunks": ["Article 4\nDefinitions\n(1) 'personal data' means...", "Article 83\nPenalties\nMember States shall..."],
+                "trace_id": "abc123-def456",
+                "timings": {"read_ms": 2340.5},
+                "usage": {"input_tokens": 1250, "output_tokens": 180},
+                "model_info": {"reader_model": "claude-3-7", "embedding_model": "text-embedding-3-small", "use_hyde": False},
+            }
+        }
+    }
+
+
+class HealthResponse(BaseModel):
+    """Health check response."""
+    
+    status: str = Field(description="Overall status: ok or degraded")
+    litellm: Dict[str, Any] = Field(description="LiteLLM proxy status")
+    langfuse: Dict[str, Any] = Field(description="Langfuse observability status")
+    vector: Dict[str, Any] = Field(description="Vector store status")
+    defaults: Dict[str, Any] = Field(description="Default configuration values")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "status": "ok",
+                "litellm": {"url": "http://localhost:4000", "ok": True, "status_code": 200},
+                "langfuse": {"host": "https://cloud.langfuse.com", "enabled": True},
+                "vector": {"backend": "chroma", "mode": "in-process"},
+                "defaults": {"reader_model": "claude-3-7", "embedding_model": "text-embedding-3-small", "use_hyde": False},
+            }
+        }
+    }
 
 
 class ModelsResponse(BaseModel):
-    reader_models: List[str]
-    embedding_models: List[str]
-    all_models: List[str]
-    defaults: Dict[str, str]
+    """Available models response."""
+    
+    reader_models: List[str] = Field(
+        description="LLM models available for clause extraction",
+        json_schema_extra={"example": ["claude-3-7", "gpt-4", "gemma3-4b"]},
+    )
+    embedding_models: List[str] = Field(
+        description="Embedding models available for semantic search",
+        json_schema_extra={"example": ["text-embedding-3-small", "text-embedding-3-large"]},
+    )
+    all_models: List[str] = Field(description="All configured model aliases")
+    defaults: Dict[str, str] = Field(
+        description="Default model selections",
+        json_schema_extra={"example": {"reader_model": "claude-3-7", "embedding_model": "text-embedding-3-small"}},
+    )
 
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
 
 def load_litellm_models(
     config_path: str = os.path.join("src", "config", "litellm_config.yaml"),
 ) -> Tuple[List[str], List[str], List[str]]:
-    """Load model aliases from LiteLLM config and categorize naive reader vs embedding."""
+    """Load model aliases from LiteLLM config and categorize reader vs embedding."""
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         model_list = data.get("model_list", [])
-        all_models = [
-            m.get("model_name")
-            for m in model_list
-            if isinstance(m, dict) and m.get("model_name")
-        ]
+        all_models = [m.get("model_name") for m in model_list if isinstance(m, dict) and m.get("model_name")]
         reader_models: List[str] = []
         embedding_models: List[str] = []
         for m in model_list:
@@ -177,82 +370,67 @@ def load_litellm_models(
                 embedding_models.append(name)
             else:
                 reader_models.append(name)
-        # Deduplicate preserving order
-        reader_models = list(dict.fromkeys(reader_models))
-        embedding_models = list(dict.fromkeys(embedding_models))
-        all_models = list(dict.fromkeys(all_models))
-        return reader_models, embedding_models, all_models
+        return list(dict.fromkeys(reader_models)), list(dict.fromkeys(embedding_models)), list(dict.fromkeys(all_models))
     except Exception:
-        # Fallback to defaults
-        return (
-            [DEFAULT_READER_MODEL],
-            [DEFAULT_EMBEDDING_MODEL],
-            [DEFAULT_READER_MODEL, DEFAULT_EMBEDDING_MODEL],
-        )
+        return ([DEFAULT_READER_MODEL], [DEFAULT_EMBEDDING_MODEL], [DEFAULT_READER_MODEL, DEFAULT_EMBEDDING_MODEL])
 
 
 def ensure_pipelines_available():
     if run_rag_clause_extraction is None or run_advanced_rag_pipeline is None:
-        raise RuntimeError(
-            "Pipeline modules not importable. Ensure project is run from repository root so 'src' is on PYTHONPATH."
-        )
+        raise RuntimeError("Pipeline modules not importable. Run from repository root.")
 
 
-@app.get("/api/v1/health")
+# ============================================================================
+# Endpoints
+# ============================================================================
+
+@app.get("/api/v1/health", response_model=HealthResponse, tags=["meta"], summary="Health check",
+         description="Check API health and upstream service status (LiteLLM, Langfuse, vector store).")
 def health() -> Dict[str, Any]:
     lite_status = {"url": LITELLM_PROXY_URL, "ok": False}
     try:
         r = requests.get(f"{LITELLM_PROXY_URL.rstrip('/')}/v1/models", timeout=5)
         lite_status["ok"] = r.status_code < 500
         lite_status["status_code"] = r.status_code
-    except Exception as e:
+    except Exception:
         lite_status["error"] = str(e)
-    lf_status = {"host": LANGFUSE_HOST, "enabled": LANGFUSE_ENABLED}
-    vec_status = {"backend": "chroma", "mode": "in-process"}
     return {
         "status": "ok" if lite_status.get("ok") else "degraded",
         "litellm": lite_status,
-        "langfuse": lf_status,
-        "vector": vec_status,
-        "defaults": {
-            "reader_model": DEFAULT_READER_MODEL,
-            "embedding_model": DEFAULT_EMBEDDING_MODEL,
-            "use_hyde": DEFAULT_USE_HYDE,
-        },
+        "langfuse": {"host": LANGFUSE_HOST, "enabled": LANGFUSE_ENABLED},
+        "vector": {"backend": "chroma", "mode": "in-process"},
+        "defaults": {"reader_model": DEFAULT_READER_MODEL, "embedding_model": DEFAULT_EMBEDDING_MODEL, "use_hyde": DEFAULT_USE_HYDE},
     }
 
 
-@app.get("/api/v1/models", response_model=ModelsResponse)
+@app.get("/api/v1/models", response_model=ModelsResponse, tags=["meta"], summary="List available models",
+         description="Retrieve all configured LLM and embedding models from LiteLLM proxy.")
 def list_models():
     readers, embeddings, all_models = load_litellm_models()
     return {
         "reader_models": readers,
         "embedding_models": embeddings,
         "all_models": all_models,
-        "defaults": {
-            "reader_model": DEFAULT_READER_MODEL,
-            "embedding_model": DEFAULT_EMBEDDING_MODEL,
-        },
+        "defaults": {"reader_model": DEFAULT_READER_MODEL, "embedding_model": DEFAULT_EMBEDDING_MODEL},
     }
 
 
-@app.get("/metrics")
+@app.get("/metrics", tags=["observability"], summary="Prometheus metrics",
+         description="Prometheus-format metrics for monitoring.", response_class=Response,
+         responses={200: {"content": {"text/plain": {}}, "description": "Prometheus metrics"}})
 def metrics():
-    data = generate_latest()
-    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/api/v1/extract-clauses", response_model=ExtractionResponse)
+@app.post("/api/v1/extract-clauses", response_model=ExtractionResponse, tags=["extraction"],
+          summary="Extract clauses from EU regulation",
+          description="Extract legal clauses from EU regulation text using RAG-powered LLM pipelines.\n\n**Pipeline Options:**\n- Standard RAG (default)\n- HyDE Mode (use_hyde=true) for improved retrieval",
+          responses={200: {"description": "Successful extraction"}, 422: {"description": "Validation error"}, 500: {"description": "Pipeline error"}})
 def extract_clauses(req: ExtractionRequest) -> ExtractionResponse:
     ensure_pipelines_available()
     opts = req.options or ExtractionOptions()
     clause_types = req.clause_types or BASE_CLAUSE_TYPES
-    timings: Dict[str, Optional[float]] = {
-        "chunk_ms": None,
-        "embed_ms": None,
-        "retrieve_ms": None,
-        "read_ms": None,
-    }
+    timings: Dict[str, Optional[float]] = {"chunk_ms": None, "embed_ms": None, "retrieve_ms": None, "read_ms": None}
     usage: Dict[str, Optional[int]] = {"input_tokens": None, "output_tokens": None}
     model_info = {
         "reader_model": opts.reader_model or DEFAULT_READER_MODEL,
@@ -262,72 +440,40 @@ def extract_clauses(req: ExtractionRequest) -> ExtractionResponse:
     try:
         t0 = time.perf_counter()
         if opts.use_hyde:
-            # Advanced pipeline with HyDE
             result = run_advanced_rag_pipeline(
-                document_text=req.document_text,
-                document_id=req.document_id,
-                user_query=req.user_query,
-                target_clause_types=clause_types,
-                language=req.language,
-                reader_model_override=model_info["reader_model"],
-                embedding_model_override=model_info["embedding_model"],
+                document_text=req.document_text, document_id=req.document_id, user_query=req.user_query,
+                target_clause_types=clause_types, language=req.language,
+                reader_model_override=model_info["reader_model"], embedding_model_override=model_info["embedding_model"],
             )
-            t1 = time.perf_counter()
-            timings["read_ms"] = (t1 - t0) * 1000.0
-            RAG_STAGE_HISTOGRAM.labels("read").observe(t1 - t0)
-            # Pipelines return annotations as list of dicts
             predicted = result.get("predicted_annotations", []) or []
             retrieved = result.get("retrieved_chunks", []) or []
             raw = result.get("reader_llm_output_raw")
             trace_id = result.get("langfuse_trace_id")
-            # Usage not exposed directly by pipeline; keep None for now
         else:
-            # Baseline RAG pipeline (no HyDE)
             result = run_rag_clause_extraction(
-                document_text=req.document_text,
-                document_id=req.document_id,
-                language=req.language,
-                reader_model_alias_param=model_info["reader_model"],
-                embedding_model_alias_param=model_info["embedding_model"],
+                document_text=req.document_text, document_id=req.document_id, language=req.language,
+                reader_model_alias_param=model_info["reader_model"], embedding_model_alias_param=model_info["embedding_model"],
                 litellm_proxy_url_param=LITELLM_PROXY_URL,
             )
-            t1 = time.perf_counter()
-            timings["read_ms"] = (t1 - t0) * 1000.0
-            RAG_STAGE_HISTOGRAM.labels("read").observe(t1 - t0)
             predicted = result.get("predicted_annotations", []) or []
             retrieved = result.get("retrieved_chunk_texts", []) or []
             raw = None
             trace_id = result.get("rag_trace_id")
-        # Map to response model
-        predicted_items = [
-            PredictedAnnotation(**p)
-            for p in predicted
-            if isinstance(p, dict) and "clause_type" in p and "clause_text" in p
-        ]
-        # Observe tokens if present (future)
-        # if usage.get("input_tokens"): LLM_TOKENS.labels(model_info["reader_model"], "reader").inc(usage["input_tokens"] or 0)
+        t1 = time.perf_counter()
+        timings["read_ms"] = (t1 - t0) * 1000.0
+        RAG_STAGE_HISTOGRAM.labels("read").observe(t1 - t0)
+        predicted_items = [PredictedAnnotation(**p) for p in predicted if isinstance(p, dict) and "clause_type" in p and "clause_text" in p]
         return ExtractionResponse(
-            predicted_annotations=predicted_items,
-            retrieved_chunks=retrieved,
-            reader_llm_output_raw=raw,
-            trace_id=trace_id,
-            timings=timings,
-            usage=usage,
-            model_info=model_info,
+            predicted_annotations=predicted_items, retrieved_chunks=retrieved, reader_llm_output_raw=raw,
+            trace_id=trace_id, timings=timings, usage=usage, model_info=model_info,
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         RAG_ERRORS.labels("pipeline", e.__class__.__name__).inc()
         raise HTTPException(status_code=500, detail={"message": str(e)})
 
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(
-        "api.main:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8080")),
-        reload=False,
-    )
+    uvicorn.run("api.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8080")), reload=False)

@@ -1,0 +1,343 @@
+openapi: 3.1.0
+info:
+  title: EU Clause Extractor API
+  version: 1.0.0
+  description: |
+    Extract legal clauses from EU regulations using RAG-powered LLM pipelines.
+
+    ## Features
+
+    - **Semantic Retrieval**: ChromaDB vector search for relevant document chunks
+    - **Model Flexibility**: LiteLLM proxy for unified access to Claude, GPT-4, Gemma, etc.
+    - **Observability**: Langfuse integration for tracing and evaluation
+    - **HyDE Mode**: Optional Hypothetical Document Embedding for improved retrieval
+
+    ## Clause Types
+
+    The extractor identifies these clause categories:
+    - Subject Matter & Scope
+    - Definitions  
+    - Obligations of Member States
+    - Penalties
+    - Entry into Force & Application
+  contact:
+    name: Tony Thai Do
+    url: https://github.com/Tonikprofik/eu-clause-extractor
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.eucontracts.ai
+    description: Production (when deployed)
+
+tags:
+  - name: extraction
+    description: Core clause extraction endpoints
+  - name: meta
+    description: Health checks and model discovery
+  - name: observability
+    description: Prometheus metrics for monitoring
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [meta]
+      summary: Health check
+      description: Check API health and upstream service status (LiteLLM, Langfuse, vector store).
+      operationId: health
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                litellm:
+                  url: http://localhost:4000
+                  ok: true
+                  status_code: 200
+                langfuse:
+                  host: https://cloud.langfuse.com
+                  enabled: true
+                vector:
+                  backend: chroma
+                  mode: in-process
+                defaults:
+                  reader_model: claude-3-7
+                  embedding_model: text-embedding-3-small
+                  use_hyde: false
+
+  /api/v1/models:
+    get:
+      tags: [meta]
+      summary: List available models
+      description: Retrieve all configured LLM and embedding models from LiteLLM proxy.
+      operationId: listModels
+      responses:
+        '200':
+          description: Available models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelsResponse'
+              example:
+                reader_models: [claude-3-7, gpt-4, gemma3-4b]
+                embedding_models: [text-embedding-3-small, text-embedding-3-large]
+                all_models: [claude-3-7, gpt-4, gemma3-4b, text-embedding-3-small]
+                defaults:
+                  reader_model: claude-3-7
+                  embedding_model: text-embedding-3-small
+
+  /api/v1/extract-clauses:
+    post:
+      tags: [extraction]
+      summary: Extract clauses from EU regulation
+      description: |
+        Extract legal clauses from EU regulation text using RAG-powered LLM pipelines.
+
+        **Pipeline Options:**
+        - Standard RAG (default): Chunks → Embeds → Retrieves → Extracts
+        - HyDE Mode (use_hyde=true): Generates hypothetical answer for improved retrieval
+      operationId: extractClauses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractionRequest'
+            example:
+              document_id: "32016R0679"
+              document_text: |
+                Article 1
+                Subject matter and scope
+                This Regulation lays down rules relating to the protection of natural persons with regard to the processing of personal data.
+
+                Article 4
+                Definitions
+                (1) 'personal data' means any information relating to an identified or identifiable natural person ('data subject');
+                (2) 'processing' means any operation performed on personal data.
+
+                Article 83
+                Penalties
+                Member States shall lay down the rules on penalties applicable to infringements of this Regulation.
+              user_query: "Extract definitions and penalties from this GDPR excerpt"
+              clause_types: [Definitions, Penalties]
+              language: en
+              options:
+                use_hyde: false
+                top_k: 5
+                reader_model: claude-3-7
+      responses:
+        '200':
+          description: Successful extraction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractionResponse'
+              example:
+                predicted_annotations:
+                  - clause_type: Definitions
+                    clause_text: "'personal data' means any information relating to an identified or identifiable natural person"
+                  - clause_type: Penalties
+                    clause_text: "Member States shall lay down the rules on penalties applicable to infringements"
+                retrieved_chunks:
+                  - "Article 4\nDefinitions\n(1) 'personal data' means..."
+                  - "Article 83\nPenalties\nMember States shall..."
+                trace_id: abc123-def456
+                timings:
+                  read_ms: 2340.5
+                usage:
+                  input_tokens: 1250
+                  output_tokens: 180
+                model_info:
+                  reader_model: claude-3-7
+                  embedding_model: text-embedding-3-small
+                  use_hyde: false
+        '422':
+          description: Validation error in request body
+        '500':
+          description: Pipeline or upstream error
+
+  /metrics:
+    get:
+      tags: [observability]
+      summary: Prometheus metrics
+      description: Prometheus-format metrics for monitoring request latency, RAG stage timings, and error counts.
+      operationId: metrics
+      responses:
+        '200':
+          description: Prometheus metrics in text format
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP http_request_duration_seconds HTTP request latency in seconds
+                # TYPE http_request_duration_seconds histogram
+                http_request_duration_seconds_bucket{le="0.05",method="GET",route="/api/v1/health",status="200"} 10
+                ...
+
+components:
+  schemas:
+    ExtractionOptions:
+      type: object
+      description: Configuration options for the extraction pipeline
+      properties:
+        use_hyde:
+          type: boolean
+          default: false
+          description: Enable HyDE (Hypothetical Document Embedding) for improved retrieval quality
+        top_k:
+          type: integer
+          default: 5
+          minimum: 1
+          maximum: 50
+          description: Number of chunks to retrieve
+        reader_model:
+          type: string
+          nullable: true
+          description: LLM model alias for clause extraction (e.g., claude-3-7, gpt-4)
+          example: claude-3-7
+        embedding_model:
+          type: string
+          nullable: true
+          description: Embedding model alias for semantic search
+          example: text-embedding-3-small
+
+    ExtractionRequest:
+      type: object
+      required: [document_id, document_text, user_query]
+      properties:
+        document_id:
+          type: string
+          description: Unique identifier for the document (e.g., CELEX number)
+          example: "32016R0679"
+        document_text:
+          type: string
+          description: Full text of the EU regulation to analyze
+        user_query:
+          type: string
+          description: Natural language query describing what to extract
+          example: "Extract definitions, obligations, and penalties from this regulation"
+        clause_types:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Specific clause types to extract (defaults to all types)
+          example: [Definitions, Penalties]
+        language:
+          type: string
+          default: en
+          description: Document language (en, de)
+        options:
+          $ref: '#/components/schemas/ExtractionOptions'
+
+    PredictedAnnotation:
+      type: object
+      required: [clause_type, clause_text]
+      properties:
+        clause_type:
+          type: string
+          description: Category of the extracted clause
+          example: Definitions
+        clause_text:
+          type: string
+          description: The extracted clause text
+
+    ExtractionResponse:
+      type: object
+      properties:
+        predicted_annotations:
+          type: array
+          items:
+            $ref: '#/components/schemas/PredictedAnnotation'
+          description: List of extracted clauses with their types
+        retrieved_chunks:
+          type: array
+          items:
+            type: string
+          description: Document chunks used for context during extraction
+        reader_llm_output_raw:
+          type: string
+          nullable: true
+          description: Raw LLM output before parsing (for debugging)
+        trace_id:
+          type: string
+          nullable: true
+          description: Langfuse trace ID for observability
+          example: abc123-def456
+        timings:
+          type: object
+          additionalProperties:
+            type: number
+            nullable: true
+          description: Timing breakdown by pipeline stage (ms)
+        usage:
+          type: object
+          additionalProperties:
+            type: integer
+            nullable: true
+          description: Token usage statistics
+        model_info:
+          type: object
+          additionalProperties: true
+          description: Models used for this extraction
+        error:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Error details if extraction failed
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Overall status (ok or degraded)
+          enum: [ok, degraded]
+        litellm:
+          type: object
+          additionalProperties: true
+          description: LiteLLM proxy status
+        langfuse:
+          type: object
+          additionalProperties: true
+          description: Langfuse observability status
+        vector:
+          type: object
+          additionalProperties: true
+          description: Vector store status
+        defaults:
+          type: object
+          additionalProperties: true
+          description: Default configuration values
+
+    ModelsResponse:
+      type: object
+      properties:
+        reader_models:
+          type: array
+          items:
+            type: string
+          description: LLM models available for clause extraction
+        embedding_models:
+          type: array
+          items:
+            type: string
+          description: Embedding models available for semantic search
+        all_models:
+          type: array
+          items:
+            type: string
+          description: All configured model aliases
+        defaults:
+          type: object
+          additionalProperties:
+            type: string
+          description: Default model selections

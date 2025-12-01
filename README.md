@@ -4,6 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539.svg)](api/openapi.yaml)
 
 ## Overview
 
@@ -91,6 +92,63 @@ result = run_rag_clause_extraction(
 print(result["clauses"])
 ```
 
+## API Reference
+
+The extraction service exposes a REST API on port `8080`. Full specification: [api/openapi.yaml](api/openapi.yaml)
+
+### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/extract-clauses` | Extract legal clauses from EU regulation text |
+| `GET` | `/api/v1/health` | Health check with upstream service status |
+| `GET` | `/api/v1/models` | List available LLM and embedding models |
+| `GET` | `/metrics` | Prometheus metrics for monitoring |
+
+### Example Request
+
+```bash
+curl -X POST http://localhost:8080/api/v1/extract-clauses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "document_id": "32016R0679",
+    "document_text": "Article 4\nDefinitions\n(1) '\''personal data'\'' means any information...",
+    "user_query": "Extract definitions from this GDPR excerpt",
+    "clause_types": ["Definitions"],
+    "options": {
+      "top_k": 5,
+      "reader_model": "claude-3-7"
+    }
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "predicted_annotations": [
+    {
+      "clause_type": "Definitions",
+      "clause_text": "'personal data' means any information relating to an identified natural person"
+    }
+  ],
+  "retrieved_chunks": ["Article 4\nDefinitions\n(1) 'personal data' means..."],
+  "trace_id": "abc123-def456",
+  "timings": { "read_ms": 2340.5 },
+  "usage": { "input_tokens": 1250, "output_tokens": 180 },
+  "model_info": {
+    "reader_model": "claude-3-7",
+    "embedding_model": "text-embedding-3-small"
+  }
+}
+```
+
+### Interactive Docs
+
+When running the API locally, interactive documentation is available at:
+- **Swagger UI**: http://localhost:8080/docs
+- **ReDoc**: http://localhost:8080/redoc
+
 ## Project Structure
 
 ```
@@ -105,8 +163,11 @@ src/
     └── litellm_config.yaml # Model routing configuration
 
 api/                        # FastAPI service
+├── main.py                 # API implementation
+└── openapi.yaml            # OpenAPI 3.1 specification
 examples/                   # Jupyter notebooks and cookbooks
 gold_annotations/           # Ground truth dataset
+ui/                         # Next.js 15 web interface
 ```
 
 ## Evaluation Results
@@ -145,5 +206,3 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 *MSc Thesis Project — Aalborg University, 2025*
-
-
